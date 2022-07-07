@@ -1,0 +1,16 @@
+# Default PyCharm project ignored files
+.idea/
+__pycache__/
+
+# Paths
+.ipynb_checkpoints/
+example/
+venv/
+
+# Files
+graphwidget.py
+graphwidget.ui
+shapely_test.ipynb
+tree_test.py
+tree_test.ui
+Задание области.docx
