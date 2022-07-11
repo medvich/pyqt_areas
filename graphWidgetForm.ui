@@ -193,16 +193,6 @@
    </property>
    <item>
     <property name="text">
-     <string>o</string>
-    </property>
-   </item>
-   <item>
-    <property name="text">
-     <string>x</string>
-    </property>
-   </item>
-   <item>
-    <property name="text">
      <string>s</string>
     </property>
    </item>
@@ -286,6 +276,38 @@
      <width>881</width>
      <height>691</height>
     </rect>
+   </property>
+  </widget>
+  <widget class="QDialogButtonBox" name="addPolyButtonBox">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="geometry">
+    <rect>
+     <x>340</x>
+     <y>40</y>
+     <width>161</width>
+     <height>28</height>
+    </rect>
+   </property>
+   <property name="standardButtons">
+    <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+   </property>
+  </widget>
+  <widget class="QDialogButtonBox" name="deletePolyButtonBox">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="geometry">
+    <rect>
+     <x>340</x>
+     <y>120</y>
+     <width>161</width>
+     <height>28</height>
+    </rect>
+   </property>
+   <property name="standardButtons">
+    <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
    </property>
   </widget>
  </widget>

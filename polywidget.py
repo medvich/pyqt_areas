@@ -1,9 +1,11 @@
-from PyQt5 import QtCore, QtWidgets
+from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.uic import loadUi
 import pyqtgraph as pg
 
 from collections import namedtuple
 import numpy as np
+from math import sqrt
+from shapely.geometry import Polygon
 import logging
 
 
@@ -12,12 +14,12 @@ UI_WIDGET_FILE = 'graphWidgetForm.ui'
 
 class PolyWidget(QtWidgets.QWidget):
 
-    DEFAULT_LINE_COLOR = (255, 0, 0, 255)
+    DEFAULT_LINE_COLOR = (255, 255, 255, 255)
     DEFAULT_LINE_WIDTH = 3
     DEFAULT_LINE_STYLE = 'Solid'
-    DEFAULT_MARKER_COLOR = (0, 0, 255, 255)
-    DEFAULT_MARKER_SIZE = 10
-    DEFAULT_MARKER_STYLE = 'o'
+    DEFAULT_MARKER_COLOR = (100, 255, 0, 255)
+    DEFAULT_MARKER_SIZE = 3
+    DEFAULT_MARKER_STYLE = 's'
     DEFAULT_FILL_COLOR = (255, 255, 255, 255)
 
     # ~~~ Инициализация и подключение сигналов ~~~ #
@@ -35,8 +37,9 @@ class PolyWidget(QtWidgets.QWidget):
         # Подключим сигналы от кнопок
         self.connectSignals()
 
-        # Инициализируем хранилище отображаемых полигонов
+        # Инициализируем хранилище отображаемых полигонов и область отображения
         self._init_displayData()
+        self._init_displayArea()
 
     @staticmethod
     def connectLogging(status):
@@ -48,6 +51,7 @@ class PolyWidget(QtWidgets.QWidget):
         self.deletePolyPushButton.clicked.connect(self.polyDeletion)    # Только если кнопка удаления активирована
         self.polyListWidget.itemChanged.connect(self.polyItemChangedEvent)
         self.polyListWidget.itemClicked.connect(self.polyItemSelectedEvent)
+        self.addPolyButtonBox.accepted.connect(self.polyAccepted)      # Только если кнопка удаления активирована
 
         # Панель кастомизации полигонов (изначально деактивирована)
         self.lineColorButtonWidget.sigColorChanged.connect(self.lineColorChanged)
@@ -57,6 +61,10 @@ class PolyWidget(QtWidgets.QWidget):
         self.markerStyleComboBox.activated.connect(self.markerStyleChanged)
         self.lineWidthSpinBox.valueChanged.connect(self.lineWidthChanged)
         self.markerSizeSpinBox.valueChanged.connect(self.markerSizeChanged)
+
+        # Сигналы с displayArea
+        self.displayArea.scene().sigMouseMoved.connect(self.dAMouseMoved)
+        self.displayArea.scene().sigMouseClicked.connect(self.dAMouseClicked)
 
     def _init_displayData(self):
         self.key_id = 0
@@ -73,12 +81,25 @@ class PolyWidget(QtWidgets.QWidget):
              "markercolor",
              "markersize",
              "markerstyle",
-             "fillcolor"]
+             "fillcolor",
+             "display_object"]
         )
+
+    def _init_displayArea(self):
+        self.dAClickFlag = False
+
+        self.vLine = pg.InfiniteLine(angle=90, movable=False)
+        self.hLine = pg.InfiniteLine(angle=0, movable=False)
+        self.displayArea.addItem(self.vLine, ignoreBounds=True)
+        self.displayArea.addItem(self.hLine, ignoreBounds=True)
 
     # ~~~ Методы, работающие с элементами в polyListWidget ~~~ #
 
-    def polyAddition(self):
+    def polyAccepted(self):
+        if len(self.tempItemsBuffer) < 3:
+            QtWidgets.QMessageBox.about(self, 'Ошибка!', f'Узлов в полигоне должно быть больше 2')
+            raise Exception("Polygon has too less nodes")
+
         # Преобразуем новый полигон в Item, чтобы можно было с ним работать, как с QListWidgetItem
         newPolygonAsItem = QtWidgets.QListWidgetItem(self.polyListWidget)
 
@@ -96,11 +117,32 @@ class PolyWidget(QtWidgets.QWidget):
         # в хранилище displayData
         newPolygonAsItem.setFlags(newPolygonAsItem.flags() | QtCore.Qt.ItemIsEditable)
 
+        # Удалим временный эскиз нвого полигона
+        for i in range(len(self.tempItemsBuffer)):
+            self.displayArea.removeItem(self.tempItemsBuffer[i])
+
+        # Создадим на его месте полноценное изображение полигона
+        p = pg.PolyLineROI(
+            self.polyBuffer,
+            closed=True,
+            movable=True,
+            pen=pg.mkPen(self.DEFAULT_LINE_COLOR,
+                         width=self.DEFAULT_LINE_WIDTH/3,
+                         style=self.getStyleFromStr(self.DEFAULT_LINE_STYLE)),
+            handlePen=pg.mkPen(self.DEFAULT_MARKER_COLOR)
+        )
+        for handle in p.handles:
+            handle['item'].pen.setWidth(self.DEFAULT_MARKER_SIZE)
+        self.displayArea.addItem(p)
+
+        # p.sigRegionChangeStarted.connect(self.polyChangeStarted)
+        p.sigRegionChanged.connect(self.regionChanged)
+
         # Создаем новый полигон как объект структуры customPolygonStructure
         newPolygon = self.customPolygonStructure(
             newPolygonAsItem.data(1),
             newPolygonAsItem.text(),
-            [],
+            self.polyBuffer,
             [],
             self.DEFAULT_LINE_COLOR,
             self.DEFAULT_LINE_WIDTH,
@@ -108,7 +150,8 @@ class PolyWidget(QtWidgets.QWidget):
             self.DEFAULT_MARKER_COLOR,
             self.DEFAULT_MARKER_SIZE,
             self.DEFAULT_MARKER_STYLE,
-            self.DEFAULT_FILL_COLOR
+            self.DEFAULT_FILL_COLOR,
+            p
         )
         assert type(newPolygon.name) is str and \
                type(newPolygon.exterior) in (list, np.ndarray) and \
@@ -123,6 +166,24 @@ class PolyWidget(QtWidgets.QWidget):
         # Информация
         logging.info(f"Добавлен новый элемент {newPolygon.name} с ключом {newPolygon.key_id}")
 
+        self.addPolyButtonBox.setEnabled(False)
+        self.addPolyPushButton.setEnabled(True)
+        self.dAClickFlag = False
+
+    def polyAddition(self):
+        self.addPolyButtonBox.setEnabled(True)
+
+        self.tempItemsBuffer = []
+        self.polyBuffer = []
+
+        logging.info(f"tempBuffer очищен")
+
+        self.dAClickFlag = True
+        self.addPolyPushButton.setEnabled(False)
+
+        # Информация
+        logging.info(f"Включена фиксация координат кликов по displayArea")
+
     def polyDeletion(self):
         """
         Данный метод реализует удаление выбранного Item'а из QListWidget'а и из displayArea
@@ -134,9 +195,13 @@ class PolyWidget(QtWidgets.QWidget):
         selectedItem = self.polyListWidget.currentItem()
         self.polyListWidget.takeItem(self.polyListWidget.row(selectedItem))
 
-        # Удаляем его также из displayArea
+        # Ищем наш полигон в displayData по key_id
         for i in range(len(self.displayData)):
             if self.displayData[i].key_id == selectedItem.data(1):
+                # Сначал удаляем его с displayArea
+                self.displayArea.removeItem(self.displayData[i].display_object)
+
+                # Теперь удаляем его из displayArea (именно в таком порядке чтобы избежать дальнейшего ненахода)
                 self.displayData.remove(self.displayData[i])
 
                 # Информация
@@ -180,13 +245,21 @@ class PolyWidget(QtWidgets.QWidget):
                 return
 
     def polyItemSelectedEvent(self, item):
+        # Найдем selected Item в displayData
+        index = self.findItemIndexInData(item)
+
         # Добавим возможность Select и Deselect Item
         if self._isItemSelected(item):
             item.setSelected(True)
+
+            # self.displayData[index].display_object.translatable = True
+
             # Активируем все функции кастомизации области
             self.setItemCustomizationButtonsActive(True)
             self.fillItemCustomizationButtons(item)
             return
+
+        # self.displayData[index].display_object.translatable = False
         self.setItemCustomizationButtonsActive(False)
 
     # ~~~ Методы, обрабатывающие сигналы от панели кастомизации полигонов ~~~ #
@@ -195,10 +268,19 @@ class PolyWidget(QtWidgets.QWidget):
         """
         Метод, меняющий цвет линий выбранного полигона
         """
+        color = self.lineColorButtonWidget.color(mode='byte')
 
         index = self.findItemIndexInData(self.polyListWidget.currentItem())
         self.displayData[index] = \
-            self.displayData[index]._replace(linecolor=self.lineColorButtonWidget.color(mode='byte'))
+            self.displayData[index]._replace(linecolor=color)
+
+        # Меняем цвет линий отображаемого объекта
+        self.displayData[index].display_object.setPen(
+            pg.mkPen(color,
+                     width=self.displayData[index].linewidth/3,
+                     style=self.getStyleFromStr(self.displayData[index].linestyle)
+                     )
+        )
 
         # Информация
         logging.info(f"Ключ {self.displayData[index].key_id}. Цвет линий элемента {self.displayData[index].name} "
@@ -208,10 +290,15 @@ class PolyWidget(QtWidgets.QWidget):
         """
         Метод, меняющий цвет точек(узлов) выбранного полигона
         """
+        color = self.markerColorButtonWidget.color(mode='byte')
 
         index = self.findItemIndexInData(self.polyListWidget.currentItem())
         self.displayData[index] = \
-            self.displayData[index]._replace(markercolor=self.markerColorButtonWidget.color(mode='byte'))
+            self.displayData[index]._replace(markercolor=color)
+
+        # Меняем цвет точек (узлов) отображаемого объекта
+        for i in range(len(self.displayData[index].display_object.handles)):
+            self.displayData[index].display_object.handles[i]['item'].pen.setColor(self.getColorFromTuple(color))
 
         # Информация
         logging.info(f"Ключ {self.displayData[index].key_id}. Цвет узлов элемента {self.displayData[index].name} "
@@ -234,10 +321,19 @@ class PolyWidget(QtWidgets.QWidget):
         """
         Метод, изменяющий стиль линий в зависимости от выбранного элемента в lineStyleComboBox
         """
+        style = self.lineStyleComboBox.currentText()
 
         index = self.findItemIndexInData(self.polyListWidget.currentItem())
         self.displayData[index] = \
-            self.displayData[index]._replace(linestyle=self.lineStyleComboBox.currentText())
+            self.displayData[index]._replace(linestyle=style)
+
+        # Меняем стиль линий отображаемого объекта
+        self.displayData[index].display_object.setPen(
+            pg.mkPen(self.displayData[index].linecolor,
+                     width=self.displayData[index].linewidth/3,
+                     style=self.getStyleFromStr(style)
+                     )
+        )
 
         # Информация
         logging.info(f"Ключ {self.displayData[index].key_id}. Стиль линий элемента {self.displayData[index].name} "
@@ -260,10 +356,19 @@ class PolyWidget(QtWidgets.QWidget):
         """
         Метод, изменяющий толщину линий в зависимости от числа в lineWidthSpinBox
         """
+        width = self.lineWidthSpinBox.value()
 
         index = self.findItemIndexInData(self.polyListWidget.currentItem())
         self.displayData[index] = \
-            self.displayData[index]._replace(linewidth=self.lineWidthSpinBox.value())
+            self.displayData[index]._replace(linewidth=width)
+
+        # Меняем стиль линий отображаемого объекта
+        self.displayData[index].display_object.setPen(
+            pg.mkPen(self.displayData[index].linecolor,
+                     width=width/3,
+                     style=self.getStyleFromStr(self.displayData[index].linestyle)
+                     )
+        )
 
         # Информация
         logging.info(f"Ключ {self.displayData[index].key_id}. Толщина линий элемента {self.displayData[index].name} "
@@ -273,14 +378,71 @@ class PolyWidget(QtWidgets.QWidget):
         """
         Метод, изменяющий размер точек (узлов) в зависимости от числа в markerSizeSpinBox
         """
+        size = self.markerSizeSpinBox.value()
 
         index = self.findItemIndexInData(self.polyListWidget.currentItem())
         self.displayData[index] = \
-            self.displayData[index]._replace(markersize=self.markerSizeSpinBox.value())
+            self.displayData[index]._replace(markersize=size)
+
+        # Меняем размер точек (узлов) отображаемого объекта
+        for i in range(len(self.displayData[index].display_object.handles)):
+            self.displayData[index].display_object.handles[i]['item'].pen.setWidth(size)
 
         # Информация
-        logging.info(f"Ключ {self.displayData[index].key_id}. Толщина линий элемента {self.displayData[index].name} "
-                     f"изменена на {self.displayData[index].markersize}")
+        logging.info(f"Ключ {self.displayData[index].key_id}. Размер узлов элемента {self.displayData[index].name} "
+                     f"изменен на {self.displayData[index].markersize}")
+
+    # @staticmethod
+    # def polyChangeStarted(*args):
+    #     roi, = args
+    #     roi.setState(roi.lastState)
+    #
+
+    def regionChanged(self, *args):
+        roi, = args
+
+        # Меняем цвет точек (узлов) отображаемого объекта
+        for i in range(len(roi.handles)):
+            roi.handles[i]['item'].pen.setColor(self.getColorFromTuple(self.markerColorButtonWidget.color(mode='byte')))
+            roi.handles[i]['item'].pen.setWidth(self.markerSizeSpinBox.value())
+
+    # ~~~ Методы, работающие с displayArea ~~~ #
+
+    def dAMouseMoved(self, event):
+        vb = self.displayArea.plotItem.vb
+        if self.displayArea.sceneBoundingRect().contains(event):
+            mousePoint = vb.mapSceneToView(event)
+            self.vLine.setPos(mousePoint.x())
+            self.hLine.setPos(mousePoint.y())
+
+    def dAMouseClicked(self, event):
+        if not self.dAClickFlag:
+            return
+
+        vb = self.displayArea.plotItem.vb
+        sceneCoordinates = event.scenePos()
+
+        if self.displayArea.sceneBoundingRect().contains(sceneCoordinates) and event.button() == 1:
+            mousePoint = vb.mapSceneToView(sceneCoordinates)
+
+            # Информация
+            logging.info(f"Точка с координатами ({round(mousePoint.x(), 2)}, {round(mousePoint.y(), 2)}) "
+                         f"добавлена в tempBuffer")
+
+            self.polyBuffer.append((mousePoint.x(), mousePoint.y()))
+            ind = -1 if len(self.polyBuffer) == 1 else -2
+            x = [self.polyBuffer[ind][0], self.polyBuffer[-1][0]]
+            y = [self.polyBuffer[ind][1], self.polyBuffer[-1][1]]
+            tempItemObject = self.displayArea.plot(
+                x, y,
+                pen=pg.mkPen('w', width=0.8),
+                symbol='s',
+                symbolPen=(150, 255, 255, 200),
+                symbolSize=7,
+                symbolBrush=(0, 0, 0, 0)
+            )
+            self.tempItemsBuffer.append(tempItemObject)
+            return
 
     # ~~~ Сопутствующие методы ~~~ #
 
@@ -320,7 +482,7 @@ class PolyWidget(QtWidgets.QWidget):
         # Активируем/деактивируем меню редактирования
         self.lineColorButtonWidget.setEnabled(status)
         self.markerColorButtonWidget.setEnabled(status)
-        self.polyFillColorButtonWidget.setEnabled(status)
+        # self.polyFillColorButtonWidget.setEnabled(status)     # Заливка
         self.lineStyleComboBox.setEnabled(status)
         self.markerStyleComboBox.setEnabled(status)
         self.lineWidthSpinBox.setEnabled(status)
@@ -336,7 +498,7 @@ class PolyWidget(QtWidgets.QWidget):
         if selectedItemFromData is not None:
             self.lineColorButtonWidget.setColor(selectedItemFromData.linecolor)
             self.markerColorButtonWidget.setColor(selectedItemFromData.markercolor)
-            self.polyFillColorButtonWidget.setColor(selectedItemFromData.fillcolor)
+            # self.polyFillColorButtonWidget.setColor(selectedItemFromData.fillcolor)     # Заливка
 
             assert selectedItemFromData.linestyle in \
                    [self.lineStyleComboBox.itemText(i) for i in
@@ -363,6 +525,47 @@ class PolyWidget(QtWidgets.QWidget):
             if self.displayData[i].key_id == item.data(1):
                 return i
         return None
+
+    def getDisplayAreaState(self):
+        return self.displayArea.getViewBox().state['viewRange']
+
+    @staticmethod
+    def getSimplePolygon(displayAreaState, bias=0):
+        """
+        Метод возвращает координаты самого простого полигона (треугольника) с ЦМ в центре displayArea длиной
+        сторон, зависящей от текущего состояния displayArea
+        """
+
+        areaLength = abs(displayAreaState[0][1] - displayAreaState[0][0])
+        areaHeight = abs(displayAreaState[1][1] - displayAreaState[1][0])
+
+        mid = np.array([
+            displayAreaState[0][0] + areaLength / 2,
+            displayAreaState[1][0] + areaHeight / 2
+        ]) + bias
+        r = areaLength / 15
+
+        return [
+            mid + np.array([-r * sqrt(3/2), -r * 0.5]),
+            mid + np.array([0, r]),
+            mid + np.array([r * sqrt(3/2), -r * 0.5])
+        ]
+
+    @staticmethod
+    def getStyleFromStr(string):
+        if string.lower() == "solid":
+            return QtCore.Qt.SolidLine
+        elif string.lower() == "dashed":
+            return QtCore.Qt.DashLine
+        if string.lower() == "dash-dotted":
+            return QtCore.Qt.DashDotLine
+        return QtCore.Qt.DotLine
+
+    @staticmethod
+    def getColorFromTuple(tup):
+        if len(tup) > 3:
+            return QtGui.QColor(tup[0], tup[1], tup[2], tup[3])
+        return QtGui.QColor(tup[0], tup[1], tup[2])
 
     #...
 
