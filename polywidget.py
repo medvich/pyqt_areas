@@ -6,10 +6,31 @@ from collections import namedtuple
 import numpy as np
 from math import sqrt
 from shapely.geometry import Polygon
+from shapely.ops import unary_union
 import logging
 
 
 UI_WIDGET_FILE = 'graphWidgetForm.ui'
+POSSIBLE_OPERATIONS = ['Unite', 'Intersect', 'Subtract', 'Symmetry Difference']
+
+
+def extractPolyCoordinates(geom):
+    if geom.type == 'Polygon':
+        exteriorCoordinates = geom.exterior.coords[:]
+        interiorCoordinates = []
+        for interior in geom.interiors:
+            interiorCoordinates += interior.coords[:]
+    elif geom.type == 'MultiPolygon':
+        exteriorCoordinates = []
+        interiorCoordinates = []
+        for part in geom:
+            epc = extractPolyCoordinates(part)  # Recursive call
+            exteriorCoordinates += epc['exterior']
+            interiorCoordinates += epc['interiors']
+    else:
+        raise ValueError('Unhandled geometry type: ' + repr(geom.type))
+    return {'exterior': exteriorCoordinates,
+            'interiors': interiorCoordinates}
 
 
 class PolyWidget(QtWidgets.QWidget):
@@ -65,6 +86,10 @@ class PolyWidget(QtWidgets.QWidget):
         # Сигналы с displayArea
         self.displayArea.scene().sigMouseMoved.connect(self.dAMouseMoved)
         self.displayArea.scene().sigMouseClicked.connect(self.dAMouseClicked)
+
+        # Панель операций с полигонами
+        self.polyOperationsComboBox.activated.connect(self.operationActivated)
+        self.doPolyOperationPushButton.clicked.connect(self.doOperation)
 
     def _init_displayData(self):
         self.key_id = 0
@@ -401,6 +426,16 @@ class PolyWidget(QtWidgets.QWidget):
     def regionChanged(self, *args):
         roi, = args
 
+        index = None
+        for i in range(len(self.displayData)):
+            if self.displayData[i].display_object == roi:
+                index = i
+        if index is None:
+            raise Exception("???")
+
+        # Информация
+        logging.info(f"Элемент {self.displayData[index].name} изменен")
+
         # Меняем цвет точек (узлов) отображаемого объекта
         for i in range(len(roi.handles)):
             roi.handles[i]['item'].pen.setColor(self.getColorFromTuple(self.markerColorButtonWidget.color(mode='byte')))
@@ -567,9 +602,74 @@ class PolyWidget(QtWidgets.QWidget):
             return QtGui.QColor(tup[0], tup[1], tup[2], tup[3])
         return QtGui.QColor(tup[0], tup[1], tup[2])
 
+    # ~~~ Операции с полигонами ~~~ #
+
+    def doOperation(self):
+        operation = self.polyOperationsComboBox.currentText()
+
+        polyName1 = self.poly1LineEdit.text()
+        index1 = None
+        for i in range(len(self.displayData)):
+            if self.displayData[i].name == polyName1:
+                index1 = i
+        if index1 is None:
+            QtWidgets.QMessageBox.about(self, 'Ошибка!', f'Области с именем {polyName1} не существует')
+            return
+
+        polyName2 = self.poly2LineEdit.text()
+        index2 = None
+        for i in range(len(self.displayData)):
+            if self.displayData[i].name == polyName2:
+                index2 = i
+        if index2 is None:
+            QtWidgets.QMessageBox.about(self, 'Ошибка!', f'Области с именем {polyName2} не существует')
+            return
+
+        if operation == "Unite":
+            roi1 = self.displayData[index1].display_object
+            roi2 = self.displayData[index2].display_object
+
+            polygon1 = Polygon([handle['pos'] for handle in roi1.handles])
+            polygon2 = Polygon([handle['pos'] for handle in roi2.handles])
+
+            union = unary_union((polygon1, polygon2))
+            unionCoordinates = extractPolyCoordinates(union)
+
+            newItem = pg.PolyLineROI(
+                unionCoordinates['exterior'],
+                closed=True,
+                movable=True,
+                pen=pg.mkPen(self.DEFAULT_LINE_COLOR,
+                             width=self.DEFAULT_LINE_WIDTH / 3,
+                             style=self.getStyleFromStr(self.DEFAULT_LINE_STYLE)),
+                handlePen=pg.mkPen(self.DEFAULT_MARKER_COLOR)
+            )
+            for handle in newItem.handles:
+                handle['item'].pen.setWidth(self.DEFAULT_MARKER_SIZE)
+
+            self.displayArea.addItem(newItem)
+            self.displayArea.removeItem(roi1)
+            self.displayArea.removeItem(roi2)
+            if index1 > index2:
+                self.displayData.remove(self.displayData[index1])
+                self.displayData.remove(self.displayData[index2])
+            else:
+                self.displayData.remove(self.displayData[index2])
+                self.displayData.remove(self.displayData[index1])
+
+    def operationActivated(self):
+        operation = self.polyOperationsComboBox.currentText()
+
+        if operation not in POSSIBLE_OPERATIONS:
+            QtWidgets.QMessageBox.about(self, 'Ошибка!', f'Такая операция не поддерживается')
+            raise Exception("Impossible operation")
+
+    @staticmethod
+    def get2PolyUnion(poly1, poly2):
+        pass
+
+    @staticmethod
+    def convertROI2Polygon(obj, reverse=False):
+        pass
+
     #...
-
-
-
-
-
