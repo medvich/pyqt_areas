@@ -399,6 +399,9 @@
    </property>
   </widget>
   <widget class="QPushButton" name="savePolyPushButton">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
    <property name="geometry">
     <rect>
      <x>210</x>

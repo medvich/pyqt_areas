@@ -8,8 +8,11 @@ from math import sqrt
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
 import logging
+import os
+import csv
 
 
+PATH = os.getcwd()
 UI_WIDGET_FILE = 'graphWidgetForm.ui'
 POSSIBLE_OPERATIONS = ['Unite', 'Intersect', 'Subtract', 'Symmetry Difference']
 
@@ -68,11 +71,14 @@ class PolyWidget(QtWidgets.QWidget):
             logging.basicConfig(format="%(asctime)s :    %(levelname)s :    %(message)s", level=logging.INFO)
 
     def connectSignals(self):
-        self.addPolyPushButton.clicked.connect(self.polyAddition)
-        self.deletePolyPushButton.clicked.connect(self.polyDeletion)    # Только если кнопка удаления активирована
+        self.addPolyPushButton.clicked.connect(self.addPolyButtonClicked)
+        self.deletePolyPushButton.clicked.connect(self.polyDeletion)        # Только если кнопка удаления активирована
         self.polyListWidget.itemChanged.connect(self.polyItemChangedEvent)
         self.polyListWidget.itemClicked.connect(self.polyItemSelectedEvent)
-        self.addPolyButtonBox.accepted.connect(self.polyAccepted)      # Только если кнопка удаления активирована
+        self.addPolyButtonBox.accepted.connect(self.polyAccepted)           # Только если кнопка удаления активирована
+        self.addPolyButtonBox.rejected.connect(self.polyRejected)           # Только если кнопка удаления активирована
+        self.savePolyPushButton.clicked.connect(self.savePoly)              # Только если кнопка удаления активирована
+        self.loadPolyPushButton.clicked.connect(self.loadPoly)
 
         # Панель кастомизации полигонов (изначально деактивирована)
         self.lineColorButtonWidget.sigColorChanged.connect(self.lineColorChanged)
@@ -98,16 +104,15 @@ class PolyWidget(QtWidgets.QWidget):
             "customPolygonStructure",
             ["key_id",
              "name",
-             "exterior",
-             "interiors",
+             "exterior_object",
+             "interior_objects",
              "linecolor",
              "linewidth",
              "linestyle",
              "markercolor",
              "markersize",
              "markerstyle",
-             "fillcolor",
-             "display_object"]
+             "fillcolor"]
         )
 
     def _init_displayArea(self):
@@ -120,93 +125,80 @@ class PolyWidget(QtWidgets.QWidget):
 
     # ~~~ Методы, работающие с элементами в polyListWidget ~~~ #
 
+    def savePoly(self):
+        currentItem = self.polyListWidget.currentItem()
+        filename = currentItem.text()
+
+        file = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Сохранение", "{0}\\{1}.csv".format(PATH, filename), "CSV Files (*.csv)"
+        )
+
+        index = self.findItemIndexInData(currentItem)
+        exteriorHandles = []
+        for handle in self.displayData[index].exterior_object.handles:
+            exteriorHandles.append(
+                handle['pos'] if isinstance(handle['pos'], pg.Point) else pg.Point(handle['pos'].x(), handle['pos'].y())
+            )
+
+        with open(file[0], 'w', newline='') as csvfile:
+            headers = ['exterior']
+            writer = csv.DictWriter(csvfile, delimiter=";", fieldnames=headers)
+            writer.writeheader()
+            for point in exteriorHandles:
+                writer.writerow(
+                    {'exterior': (point.x(), point.y())},
+                )
+
+    def loadPoly(self):
+        file = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Открытие файла", "{0}\\*.csv".format(PATH), "CSV Files (*.csv)"
+        )
+        exteriorHandles = []
+        with open(file[0], 'r', newline='') as csvfile:
+            reader = csv.DictReader(csvfile, delimiter=";")
+            for row in reader:
+                exteriorHandles.append(eval(row['exterior']))
+
+        # Создаем новый полигон по тому же принципу
+        self.polyAddition(exterior=exteriorHandles)
+
     def polyAccepted(self):
         if len(self.tempItemsBuffer) < 3:
             QtWidgets.QMessageBox.about(self, 'Ошибка!', f'Узлов в полигоне должно быть больше 2')
             raise Exception("Polygon has too less nodes")
 
-        # Преобразуем новый полигон в Item, чтобы можно было с ним работать, как с QListWidgetItem
-        newPolygonAsItem = QtWidgets.QListWidgetItem(self.polyListWidget)
-
-        polyNames = self.displayDataNames()
-
-        # Пресечем возможность совпадения имен ри добавлении нового элемента
-        newPolyName = f"Polygon_{self.key_id + 1}"
-        newPolygonAsItem.setText(newPolyName if newPolyName not in polyNames else f"Polygon_{self.key_id + 2}")
-        newPolygonAsItem.setData(1, self.key_id)
-
-        # Добавляем Item на наш QListWidget и присваиваем ему дефолтное имя по порядку, исходя из displayData.
-        self.polyListWidget.addItem(newPolygonAsItem)
-
-        # Сделаем поле с названием полигона изменяемым (удобно ж). Но надо не забыть учесть изменение имя пользователем
-        # в хранилище displayData
-        newPolygonAsItem.setFlags(newPolygonAsItem.flags() | QtCore.Qt.ItemIsEditable)
-
-        # Удалим временный эскиз нвого полигона
+        # Удалим временный эскиз нового полигона
         for i in range(len(self.tempItemsBuffer)):
             self.displayArea.removeItem(self.tempItemsBuffer[i])
 
-        # Создадим на его месте полноценное изображение полигона
-        p = pg.PolyLineROI(
-            self.polyBuffer,
-            closed=True,
-            movable=True,
-            pen=pg.mkPen(self.DEFAULT_LINE_COLOR,
-                         width=self.DEFAULT_LINE_WIDTH/3,
-                         style=self.getStyleFromStr(self.DEFAULT_LINE_STYLE)),
-            handlePen=pg.mkPen(self.DEFAULT_MARKER_COLOR)
-        )
-        for handle in p.handles:
-            handle['item'].pen.setWidth(self.DEFAULT_MARKER_SIZE)
-        self.displayArea.addItem(p)
-
-        # p.sigRegionChangeStarted.connect(self.polyChangeStarted)
-        p.sigRegionChanged.connect(self.regionChanged)
-
-        # Создаем новый полигон как объект структуры customPolygonStructure
-        newPolygon = self.customPolygonStructure(
-            newPolygonAsItem.data(1),
-            newPolygonAsItem.text(),
-            self.polyBuffer,
-            [],
-            self.DEFAULT_LINE_COLOR,
-            self.DEFAULT_LINE_WIDTH,
-            self.DEFAULT_LINE_STYLE,
-            self.DEFAULT_MARKER_COLOR,
-            self.DEFAULT_MARKER_SIZE,
-            self.DEFAULT_MARKER_STYLE,
-            self.DEFAULT_FILL_COLOR,
-            p
-        )
-        assert type(newPolygon.name) is str and \
-               type(newPolygon.exterior) in (list, np.ndarray) and \
-               type(newPolygon.interiors) in (list, np.ndarray), "Wrong parameter or parameters type"
-
-        # Добавляем Item в хранилище отображаемых полигонов
-        self.displayData.append(newPolygon)
-
-        # Увеличиваем key_id для следующего полигона
-        self.key_id += 1
-
-        # Информация
-        logging.info(f"Добавлен новый элемент {newPolygon.name} с ключом {newPolygon.key_id}")
+        self.polyAddition(exterior=self.polyBuffer)
 
         self.addPolyButtonBox.setEnabled(False)
         self.addPolyPushButton.setEnabled(True)
         self.dAClickFlag = False
 
-    def polyAddition(self):
-        self.addPolyButtonBox.setEnabled(True)
+    def polyRejected(self):
+        # Удалим временный эскиз нового полигона
+        for i in range(len(self.tempItemsBuffer)):
+            self.displayArea.removeItem(self.tempItemsBuffer[i])
 
+        self.addPolyButtonBox.setEnabled(False)
+        self.addPolyPushButton.setEnabled(True)
+        self.dAClickFlag = False
+
+        # Информация
+        logging.info(f"Отмена добавления нового элемента")
+        logging.info(f"Фиксация координат кликов по displayArea выключена")
+
+    def addPolyButtonClicked(self):
+        self.addPolyButtonBox.setEnabled(True)
         self.tempItemsBuffer = []
         self.polyBuffer = []
-
-        logging.info(f"tempBuffer очищен")
-
         self.dAClickFlag = True
         self.addPolyPushButton.setEnabled(False)
 
         # Информация
+        logging.info(f"tempBuffer очищен")
         logging.info(f"Включена фиксация координат кликов по displayArea")
 
     def polyDeletion(self):
@@ -224,7 +216,7 @@ class PolyWidget(QtWidgets.QWidget):
         for i in range(len(self.displayData)):
             if self.displayData[i].key_id == selectedItem.data(1):
                 # Сначал удаляем его с displayArea
-                self.displayArea.removeItem(self.displayData[i].display_object)
+                self.displayArea.removeItem(self.displayData[i].exterior_object)
 
                 # Теперь удаляем его из displayArea (именно в таком порядке чтобы избежать дальнейшего ненахода)
                 self.displayData.remove(self.displayData[i])
@@ -277,14 +269,14 @@ class PolyWidget(QtWidgets.QWidget):
         if self._isItemSelected(item):
             item.setSelected(True)
 
-            # self.displayData[index].display_object.translatable = True
+            # self.displayData[index].exterior_object.translatable = True
 
             # Активируем все функции кастомизации области
             self.setItemCustomizationButtonsActive(True)
             self.fillItemCustomizationButtons(item)
             return
 
-        # self.displayData[index].display_object.translatable = False
+        # self.displayData[index].exterior_object.translatable = False
         self.setItemCustomizationButtonsActive(False)
 
     # ~~~ Методы, обрабатывающие сигналы от панели кастомизации полигонов ~~~ #
@@ -300,7 +292,7 @@ class PolyWidget(QtWidgets.QWidget):
             self.displayData[index]._replace(linecolor=color)
 
         # Меняем цвет линий отображаемого объекта
-        self.displayData[index].display_object.setPen(
+        self.displayData[index].exterior_object.setPen(
             pg.mkPen(color,
                      width=self.displayData[index].linewidth/3,
                      style=self.getStyleFromStr(self.displayData[index].linestyle)
@@ -322,8 +314,8 @@ class PolyWidget(QtWidgets.QWidget):
             self.displayData[index]._replace(markercolor=color)
 
         # Меняем цвет точек (узлов) отображаемого объекта
-        for i in range(len(self.displayData[index].display_object.handles)):
-            self.displayData[index].display_object.handles[i]['item'].pen.setColor(self.getColorFromTuple(color))
+        for i in range(len(self.displayData[index].exterior_object.handles)):
+            self.displayData[index].exterior_object.handles[i]['item'].pen.setColor(self.getColorFromTuple(color))
 
         # Информация
         logging.info(f"Ключ {self.displayData[index].key_id}. Цвет узлов элемента {self.displayData[index].name} "
@@ -353,7 +345,7 @@ class PolyWidget(QtWidgets.QWidget):
             self.displayData[index]._replace(linestyle=style)
 
         # Меняем стиль линий отображаемого объекта
-        self.displayData[index].display_object.setPen(
+        self.displayData[index].exterior_object.setPen(
             pg.mkPen(self.displayData[index].linecolor,
                      width=self.displayData[index].linewidth/3,
                      style=self.getStyleFromStr(style)
@@ -388,7 +380,7 @@ class PolyWidget(QtWidgets.QWidget):
             self.displayData[index]._replace(linewidth=width)
 
         # Меняем стиль линий отображаемого объекта
-        self.displayData[index].display_object.setPen(
+        self.displayData[index].exterior_object.setPen(
             pg.mkPen(self.displayData[index].linecolor,
                      width=width/3,
                      style=self.getStyleFromStr(self.displayData[index].linestyle)
@@ -410,25 +402,52 @@ class PolyWidget(QtWidgets.QWidget):
             self.displayData[index]._replace(markersize=size)
 
         # Меняем размер точек (узлов) отображаемого объекта
-        for i in range(len(self.displayData[index].display_object.handles)):
-            self.displayData[index].display_object.handles[i]['item'].pen.setWidth(size)
+        for i in range(len(self.displayData[index].exterior_object.handles)):
+            self.displayData[index].exterior_object.handles[i]['item'].pen.setWidth(size)
 
         # Информация
         logging.info(f"Ключ {self.displayData[index].key_id}. Размер узлов элемента {self.displayData[index].name} "
                      f"изменен на {self.displayData[index].markersize}")
 
-    # @staticmethod
-    # def polyChangeStarted(*args):
-    #     roi, = args
-    #     roi.setState(roi.lastState)
-    #
+    def regionChangeFinished(self, *args):
+        roi, = args
+
+        index = None
+        for i in range(len(self.displayData)):
+            if self.displayData[i].exterior_object == roi:
+                index = i
+        if index is None:
+            raise Exception("???")
+
+        # Информация
+        logging.info(f"Элемент {self.displayData[index].name} изменен")
+
+        # Меняем цвет точек (узлов) отображаемого объекта
+        for i in range(len(roi.handles)):
+            roi.handles[i]['item'].pen.setColor(self.getColorFromTuple(self.markerColorButtonWidget.color(mode='byte')))
+            roi.handles[i]['item'].pen.setWidth(self.markerSizeSpinBox.value())
+
+        handles = []
+        for handle in roi.handles:
+            handles.append(
+                handle['pos'] if isinstance(handle['pos'], pg.Point) else pg.Point(handle['pos'].x(), handle['pos'].y())
+            )
+
+        polygon = Polygon(handles)
+        if not polygon.is_valid:
+            print("Polygon is invalid")
+
+    @staticmethod
+    def regionChangeStarted(*args):
+        roi, = args
+        # roi.setState(roi.lastState)
 
     def regionChanged(self, *args):
         roi, = args
 
         index = None
         for i in range(len(self.displayData)):
-            if self.displayData[i].display_object == roi:
+            if self.displayData[i].exterior_object == roi:
                 index = i
         if index is None:
             raise Exception("???")
@@ -508,6 +527,8 @@ class PolyWidget(QtWidgets.QWidget):
         return False
 
     def setItemCustomizationButtonsActive(self, status):
+        self.savePolyPushButton.setEnabled(status)
+
         # Активируем/деактивируем кнопку удаления полигона
         self.deletePolyPushButton.setEnabled(status)
 
@@ -625,37 +646,99 @@ class PolyWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.about(self, 'Ошибка!', f'Области с именем {polyName2} не существует')
             return
 
+        roi1 = self.displayData[index1].exterior_object
+        roi2 = self.displayData[index2].exterior_object
+
+        handles1 = []
+        for handle in roi1.handles:
+            handles1.append(
+                handle['pos'] if isinstance(handle['pos'], pg.Point) else pg.Point(handle['pos'].x(), handle['pos'].y())
+            )
+
+        handles2 = []
+        for handle in roi2.handles:
+            handles2.append(
+                handle['pos'] if isinstance(handle['pos'], pg.Point) else pg.Point(handle['pos'].x(), handle['pos'].y())
+            )
+
+        polygon1 = Polygon(handles1)
+        polygon2 = Polygon(handles2)
+
         if operation == "Unite":
-            roi1 = self.displayData[index1].display_object
-            roi2 = self.displayData[index2].display_object
-
-            polygon1 = Polygon([handle['pos'] for handle in roi1.handles])
-            polygon2 = Polygon([handle['pos'] for handle in roi2.handles])
-
             union = unary_union((polygon1, polygon2))
             unionCoordinates = extractPolyCoordinates(union)
 
-            newItem = pg.PolyLineROI(
-                unionCoordinates['exterior'],
-                closed=True,
-                movable=True,
-                pen=pg.mkPen(self.DEFAULT_LINE_COLOR,
-                             width=self.DEFAULT_LINE_WIDTH / 3,
-                             style=self.getStyleFromStr(self.DEFAULT_LINE_STYLE)),
-                handlePen=pg.mkPen(self.DEFAULT_MARKER_COLOR)
-            )
-            for handle in newItem.handles:
-                handle['item'].pen.setWidth(self.DEFAULT_MARKER_SIZE)
+            itemsInListWidget = [self.polyListWidget.item(x) for x in range(self.polyListWidget.count())]
 
-            self.displayArea.addItem(newItem)
-            self.displayArea.removeItem(roi1)
-            self.displayArea.removeItem(roi2)
-            if index1 > index2:
-                self.displayData.remove(self.displayData[index1])
-                self.displayData.remove(self.displayData[index2])
-            else:
-                self.displayData.remove(self.displayData[index2])
-                self.displayData.remove(self.displayData[index1])
+            for item in itemsInListWidget:
+                if item.text() == polyName1:
+                    item.setSelected(True)
+                    self.polyDeletion()
+
+            for item in itemsInListWidget:
+                if item.text() == polyName2:
+                    item.setSelected(True)
+                    self.polyDeletion()
+
+            self.polyAddition(exterior=unionCoordinates['exterior'])
+
+        if operation == "Intersect":
+            intersection = polygon1.intersection(polygon2)
+            intersectionCoordinates = extractPolyCoordinates(intersection)
+
+            itemsInListWidget = [self.polyListWidget.item(x) for x in range(self.polyListWidget.count())]
+
+            for item in itemsInListWidget:
+                if item.text() == polyName1:
+                    item.setSelected(True)
+                    self.polyDeletion()
+
+            for item in itemsInListWidget:
+                if item.text() == polyName2:
+                    item.setSelected(True)
+                    self.polyDeletion()
+
+            self.polyAddition(exterior=intersectionCoordinates['exterior'])
+
+        if operation == "Subtract":
+            subtraction = polygon1.difference(polygon2)
+            subtractionCoordinates = extractPolyCoordinates(subtraction)
+
+            itemsInListWidget = [self.polyListWidget.item(x) for x in range(self.polyListWidget.count())]
+
+            # [pg.Point(x, y) for (x, y) in subtractionCoordinates['exterior']]
+
+            for item in itemsInListWidget:
+                if item.text() == polyName1:
+                    item.setSelected(True)
+                    self.polyDeletion()
+
+            self.polyAddition(exterior=subtractionCoordinates['exterior'])
+
+        if operation == "Symmetry Difference":
+            difference1 = polygon1.difference(polygon2)
+            difference2 = polygon2.difference(polygon1)
+
+            difference1Coordinates = extractPolyCoordinates(difference1)
+            difference2Coordinates = extractPolyCoordinates(difference2)
+
+            itemsInListWidget = [self.polyListWidget.item(x) for x in range(self.polyListWidget.count())]
+
+            for item in itemsInListWidget:
+                if item.text() == polyName1:
+                    item.setSelected(True)
+                    self.polyDeletion()
+
+            for item in itemsInListWidget:
+                if item.text() == polyName2:
+                    item.setSelected(True)
+                    self.polyDeletion()
+
+            self.polyAddition(exterior=difference1Coordinates['exterior'])
+            self.polyAddition(exterior=difference2Coordinates['exterior'])
+
+        self.poly1LineEdit.clear()
+        self.poly2LineEdit.clear()
 
     def operationActivated(self):
         operation = self.polyOperationsComboBox.currentText()
@@ -673,3 +756,64 @@ class PolyWidget(QtWidgets.QWidget):
         pass
 
     #...
+
+    def polyAddition(self, exterior=None):
+        assert exterior is not None, "Need to add exterior coordinates"
+
+        # Преобразуем новый полигон в Item, чтобы можно было с ним работать, как с QListWidgetItem
+        newPolygonAsItem = QtWidgets.QListWidgetItem(self.polyListWidget)
+        polyNames = self.displayDataNames()
+
+        # Пресечем возможность совпадения имен при добавлении нового элемента
+        newPolyName = f"Polygon_{self.key_id + 1}"
+        newPolygonAsItem.setText(newPolyName if newPolyName not in polyNames else f"Polygon_{self.key_id + 2}")
+        newPolygonAsItem.setData(1, self.key_id)
+
+        # Добавляем Item на наш QListWidget и присваиваем ему дефолтное имя по порядку, исходя из displayData.
+        self.polyListWidget.addItem(newPolygonAsItem)
+
+        # Сделаем поле с названием полигона изменяемым (удобно ж). Но надо не забыть учесть изменение имя пользователем
+        # в хранилище displayData
+        newPolygonAsItem.setFlags(newPolygonAsItem.flags() | QtCore.Qt.ItemIsEditable)
+
+        # Создадим на его месте полноценное изображение полигона
+        exteriorObj = pg.PolyLineROI(
+            exterior,
+            closed=True,
+            movable=True,
+            pen=pg.mkPen(self.DEFAULT_LINE_COLOR,
+                         width=self.DEFAULT_LINE_WIDTH/3,
+                         style=self.getStyleFromStr(self.DEFAULT_LINE_STYLE)),
+            handlePen=pg.mkPen(self.DEFAULT_MARKER_COLOR)
+        )
+        for handle in exteriorObj.handles:
+            handle['item'].pen.setWidth(self.DEFAULT_MARKER_SIZE)
+        self.displayArea.addItem(exteriorObj)
+
+        exteriorObj.sigRegionChangeStarted.connect(self.regionChangeStarted)
+        # exteriorObj.sigRegionChanged.connect(self.regionChanged)
+        exteriorObj.sigRegionChangeFinished.connect(self.regionChangeFinished)
+
+        # Создаем новый полигон как объект структуры customPolygonStructure
+        newPolygon = self.customPolygonStructure(
+            newPolygonAsItem.data(1),
+            newPolygonAsItem.text(),
+            exteriorObj,
+            [],
+            self.DEFAULT_LINE_COLOR,
+            self.DEFAULT_LINE_WIDTH,
+            self.DEFAULT_LINE_STYLE,
+            self.DEFAULT_MARKER_COLOR,
+            self.DEFAULT_MARKER_SIZE,
+            self.DEFAULT_MARKER_STYLE,
+            self.DEFAULT_FILL_COLOR
+        )
+
+        # Добавляем Item в хранилище отображаемых полигонов
+        self.displayData.append(newPolygon)
+
+        # Увеличиваем key_id для следующего полигона
+        self.key_id += 1
+
+        # Информация
+        logging.info(f"Добавлен новый элемент {newPolygon.name} с ключом {newPolygon.key_id}")
