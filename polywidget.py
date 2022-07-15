@@ -41,8 +41,8 @@ class PolyWidget(QtWidgets.QWidget):
     DEFAULT_LINE_COLOR = (255, 255, 255, 255)
     DEFAULT_LINE_WIDTH = 3
     DEFAULT_LINE_STYLE = 'Solid'
-    DEFAULT_MARKER_COLOR = (100, 255, 0, 255)
-    DEFAULT_MARKER_SIZE = 3
+    DEFAULT_MARKER_COLOR = (150, 255, 255, 255)
+    DEFAULT_MARKER_SIZE = 1
     DEFAULT_MARKER_STYLE = 's'
     DEFAULT_FILL_COLOR = (255, 255, 255, 255)
 
@@ -139,6 +139,7 @@ class PolyWidget(QtWidgets.QWidget):
             exteriorHandles.append(
                 handle['pos'] if isinstance(handle['pos'], pg.Point) else pg.Point(handle['pos'].x(), handle['pos'].y())
             )
+        exteriorHandles = [self.displayData[index].exterior_object.getState()['pos'] + handle for handle in exteriorHandles]
 
         with open(file[0], 'w', newline='') as csvfile:
             headers = ['exterior']
@@ -433,6 +434,15 @@ class PolyWidget(QtWidgets.QWidget):
                 handle['pos'] if isinstance(handle['pos'], pg.Point) else pg.Point(handle['pos'].x(), handle['pos'].y())
             )
 
+        handles2 = []
+        for handle in self.displayData[index].exterior_object.handles:
+            handles2.append(
+                handle['pos'] if isinstance(handle['pos'], pg.Point) else pg.Point(handle['pos'].x(), handle['pos'].y())
+            )
+
+        print(roi.getState()['pos'], handles, "\n", self.displayData[index].exterior_object.getState()['pos'], handles2)
+        print([roi.getState()['pos'] + handle for handle in handles2])
+
         polygon = Polygon(handles)
         if not polygon.is_valid:
             print("Polygon is invalid")
@@ -654,12 +664,14 @@ class PolyWidget(QtWidgets.QWidget):
             handles1.append(
                 handle['pos'] if isinstance(handle['pos'], pg.Point) else pg.Point(handle['pos'].x(), handle['pos'].y())
             )
+        handles1 = [roi1.getState()['pos'] + handle for handle in handles1]
 
         handles2 = []
         for handle in roi2.handles:
             handles2.append(
                 handle['pos'] if isinstance(handle['pos'], pg.Point) else pg.Point(handle['pos'].x(), handle['pos'].y())
             )
+        handles2 = [roi2.getState()['pos'] + handle for handle in handles2]
 
         polygon1 = Polygon(handles1)
         polygon2 = Polygon(handles2)
@@ -703,6 +715,8 @@ class PolyWidget(QtWidgets.QWidget):
         if operation == "Subtract":
             subtraction = polygon1.difference(polygon2)
             subtractionCoordinates = extractPolyCoordinates(subtraction)
+
+            logging.info(f"Из полигона {self.displayData[index1].name} был вычтен полигон {self.displayData[index2].name}")
 
             itemsInListWidget = [self.polyListWidget.item(x) for x in range(self.polyListWidget.count())]
 

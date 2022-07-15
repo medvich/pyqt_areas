@@ -1,8 +1,6 @@
 from PyQt5.uic import loadUi
 from PyQt5.QtWidgets import QApplication, QHBoxLayout, QMainWindow
 import sys
-from graphwidget import GraphWidget
-from tree_test import RegionTree
 from polywidget import PolyWidget
 
 
@@ -20,12 +18,10 @@ class MainWindow(QMainWindow):
         loadUi(UI_FILE, self)
         layout = QHBoxLayout()
         self.groupBox.setLayout(layout)
+
         # !!!
         customGraphWidget = PolyWidget(self)
         layout.addWidget(customGraphWidget)
-        # my_widget = GraphWidget(self)
-        # layout.addWidget(my_widget)
-        # layout.addWidget(RegionTree(self))
 
 
 def main():
